@@ -1,10 +1,4 @@
-"""Main processing pipeline: video → 3D pose → animation export.
-
-Orchestrates every stage of the mocap system in a single Process() call.
-Defensive imports are used throughout; modules that do not yet exist are
-silently substituted with None-returning stubs so the file can be imported
-even on a partial codebase.
-"""
+"""Main processing pipeline: video → 3D pose → animation export."""
 from __future__ import annotations
 
 import logging
@@ -23,7 +17,6 @@ logger = logging.getLogger(__name__)
 # Defensive module imports
 # ---------------------------------------------------------------------------
 
-# utils
 try:
     from src.utils.validation import validate_video_path
 except ImportError:
@@ -39,7 +32,6 @@ except ImportError:
     def get_logger(name: str) -> logging.Logger:  # type: ignore[misc]
         return logging.getLogger(name)
 
-# video
 try:
     from src.video.metadata import VideoMetadata, extract_metadata
 except ImportError:  # pragma: no cover
@@ -68,7 +60,6 @@ try:
     from src.video.loader import VideoLoader
 except ImportError:  # pragma: no cover
     class VideoLoader:  # type: ignore[no-redef]
-        """Minimal fallback loader using raw OpenCV."""
         def __init__(self, path: Path, target_fps: float = 30.0, **_kw: Any) -> None:
             import cv2
             self._path = path
@@ -130,75 +121,93 @@ try:
 except ImportError:  # pragma: no cover
     LandmarkFilter = None  # type: ignore[assignment,misc]
 
-# reconstruction
+# camera
 try:
-    from src.reconstruction.camera import estimate_camera
+    from src.reconstruction.camera import estimate_focal_length, make_camera
+    _CAMERA_AVAILABLE = True
 except ImportError:  # pragma: no cover
-    def estimate_camera(world_pts: np.ndarray, **_kw: Any) -> Any:  # type: ignore[misc]
+    _CAMERA_AVAILABLE = False
+    def make_camera(width: int, height: int, focal_px: Optional[float] = None) -> None:  # type: ignore[misc]
         return None
+    def estimate_focal_length(*_a: Any, **_kw: Any) -> float:  # type: ignore[misc]
+        return 0.0
 
-try:
-    from src.reconstruction.kinematics import estimate_body_proportions
-except ImportError:  # pragma: no cover
-    def estimate_body_proportions(seq: np.ndarray, **_kw: Any) -> Any:  # type: ignore[misc]
-        return {}
-
+# optimizer
 try:
     from src.reconstruction.optimization import PoseOptimizer
 except ImportError:  # pragma: no cover
-    class PoseOptimizer:  # type: ignore[no-redef]
-        def __init__(self, **_kw: Any) -> None:
-            pass
+    PoseOptimizer = None  # type: ignore[assignment,misc]
 
-        def run(self, seq: np.ndarray, **_kw: Any) -> np.ndarray:
-            return seq
-
-# animation
+# animation skeleton
 try:
-    from src.animation.skeleton import AnimationSkeleton
+    from src.animation.skeleton import (
+        AnimationData,
+        AnimationFrame,
+        AnimationSkeleton,
+        build_animation_skeleton,
+    )
+    _SKELETON_AVAILABLE = True
 except ImportError:  # pragma: no cover
+    _SKELETON_AVAILABLE = False
     AnimationSkeleton = None  # type: ignore[assignment,misc]
+    AnimationData = None      # type: ignore[assignment,misc]
+    AnimationFrame = None     # type: ignore[assignment,misc]
+    build_animation_skeleton = None  # type: ignore[assignment,misc]
 
+# retargeting
 try:
     from src.animation.retargeting import MediaPipeToSkeletonRetargeter
 except ImportError:  # pragma: no cover
     MediaPipeToSkeletonRetargeter = None  # type: ignore[assignment,misc]
 
+# export
 try:
-    from src.animation.export import export_all
+    from src.animation.export import AnimationExporter
+    _EXPORTER_AVAILABLE = True
 except ImportError:  # pragma: no cover
-    def export_all(  # type: ignore[misc]
-        skeleton: Any,
-        output_dir: Path,
-        formats: List[str],
-        stem: str,
-        **_kw: Any,
-    ) -> Dict[str, Path]:
-        logger.warning("animation.export not available; no files written")
-        return {}
+    _EXPORTER_AVAILABLE = False
+    AnimationExporter = None  # type: ignore[assignment,misc]
 
-# evaluation
+# metrics
 try:
-    from src.evaluation.metrics import compute_metrics
+    from src.evaluation.metrics import MetricsReporter
+    _METRICS_AVAILABLE = True
 except ImportError:  # pragma: no cover
-    def compute_metrics(  # type: ignore[misc]
-        seq: np.ndarray, **_kw: Any
-    ) -> Optional[object]:
-        return None
+    _METRICS_AVAILABLE = False
+    MetricsReporter = None  # type: ignore[assignment,misc]
 
-# tqdm (optional)
+# tqdm
 try:
-    from tqdm import tqdm as _tqdm  # type: ignore[import-untyped]
+    from tqdm import tqdm as _tqdm
     _TQDM_AVAILABLE = True
 except ImportError:
     _TQDM_AVAILABLE = False
 
 
 def _progress(iterable, **kwargs):
-    """Wrap *iterable* with tqdm if available, else return it unchanged."""
     if _TQDM_AVAILABLE:
         return _tqdm(iterable, **kwargs)
     return iterable
+
+
+def _estimate_body_proportions(sequence_3d: np.ndarray, n_frames: int = 0) -> dict:
+    """Compute median bone lengths from SKELETON_CONNECTIONS. Returns {bone_name: length_m}."""
+    try:
+        from src.pose.keypoints import SKELETON_CONNECTIONS, MP33_NAMES
+    except ImportError:
+        return {}
+    seq = sequence_3d[:n_frames] if 0 < n_frames <= len(sequence_3d) else sequence_3d
+    valid = ~np.any(np.isnan(seq.reshape(seq.shape[0], -1)), axis=1)
+    seq = seq[valid]
+    if len(seq) == 0:
+        return {}
+    result: dict = {}
+    for a, b in SKELETON_CONNECTIONS:
+        if a >= seq.shape[1] or b >= seq.shape[1]:
+            continue
+        lengths = np.linalg.norm(seq[:, b] - seq[:, a], axis=1)
+        result[f"{MP33_NAMES[a]}_{MP33_NAMES[b]}"] = float(np.median(lengths))
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -207,13 +216,12 @@ def _progress(iterable, **kwargs):
 
 @dataclass
 class ProcessingResult:
-    """Returned by :meth:`MocapPipeline.process`."""
     source_video: Path
     output_files: Dict[str, Path] = field(default_factory=dict)
     metrics: Optional[object] = None
     processing_time_sec: float = 0.0
     frame_count: int = 0
-    detection_rate: float = 0.0  # fraction of frames with valid detection (0–1)
+    detection_rate: float = 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -221,49 +229,15 @@ class ProcessingResult:
 # ---------------------------------------------------------------------------
 
 class MocapPipeline:
-    """Orchestrates the full video → 3D pose → animation export pipeline.
-
-    Parameters
-    ----------
-    settings:
-        Fully-populated :class:`~src.config.settings.Settings` instance.
-    """
-
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self._log = get_logger(__name__)
-
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
 
     def process(
         self,
         video_path: Path,
         output_dir: Optional[Path] = None,
     ) -> ProcessingResult:
-        """Full video → animation pipeline.
-
-        Parameters
-        ----------
-        video_path:
-            Path to the input video file.
-        output_dir:
-            Directory where output files are written.  Falls back to
-            ``settings.animation.output_dir`` if *None*.
-
-        Returns
-        -------
-        ProcessingResult
-            Dataclass containing output paths, timing, and metrics.
-
-        Raises
-        ------
-        FileNotFoundError
-            If *video_path* does not exist.
-        RuntimeError
-            If the video has no readable frames.
-        """
         pipeline_start = time.perf_counter()
 
         video_path = Path(video_path)
@@ -271,50 +245,35 @@ class MocapPipeline:
             output_dir = Path(self.settings.animation.output_dir)
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
-
         stem = video_path.stem
 
-        # ---- 1. Validate inputs ----------------------------------------
+        # ---- 1. Validate ------------------------------------------------
         self._log.info("Stage 1/8: Validating inputs")
-        t0 = time.perf_counter()
         validate_video_path(video_path)
-        self._log.debug("  validation: %.3fs", time.perf_counter() - t0)
 
-        # ---- 2. Extract video metadata ---------------------------------
+        # ---- 2. Metadata ------------------------------------------------
         self._log.info("Stage 2/8: Extracting video metadata")
-        t0 = time.perf_counter()
         meta = extract_metadata(video_path)
         self._log.info(
             "  %dx%d @ %.2f fps, %d frames, %.1fs",
             meta.width, meta.height, meta.fps, meta.frame_count, meta.duration_sec,
         )
-        self._log.debug("  metadata: %.3fs", time.perf_counter() - t0)
-
         if meta.frame_count == 0:
             raise RuntimeError(f"Video appears to have no frames: {video_path}")
 
-        # ---- 3. Initialize preprocessor --------------------------------
-        self._log.info("Stage 3/8: Initializing processing components")
-        t0 = time.perf_counter()
-        preprocessor = FramePreprocessor(
-            max_dimension=self.settings.video.max_dimension,
-        )
-
-        # ---- 4. Initialize MediaPipePose2D estimator -------------------
+        # ---- 3. Initialize components -----------------------------------
+        self._log.info("Stage 3/8: Initializing components")
+        preprocessor = FramePreprocessor(max_dimension=self.settings.video.max_dimension)
         pose2d = self._build_pose2d_estimator()
-
-        # ---- 5. Initialize One Euro filter -----------------------------
         landmark_filter = self._build_landmark_filter(meta.fps)
-        self._log.debug("  component init: %.3fs", time.perf_counter() - t0)
 
-        # ---- 6. Per-frame estimation -----------------------------------
+        # ---- 4. Per-frame estimation ------------------------------------
         self._log.info("Stage 4/8: Running per-frame pose estimation")
-        t0 = time.perf_counter()
-
-        world_seq: List[np.ndarray] = []   # [33, 3] per frame
-        image_seq: List[np.ndarray] = []   # [33, 3] per frame (x, y, vis)
+        world_seq: List[np.ndarray] = []
+        image_seq: List[np.ndarray] = []
         empty_lm = np.full((33, 3), np.nan, dtype=np.float32)
         detected_count = 0
+        frame_index = 0
 
         with VideoLoader(video_path, target_fps=self.settings.video.target_fps) as loader:
             frame_iter = _progress(
@@ -326,12 +285,13 @@ class MocapPipeline:
             )
             for rgb_frame in frame_iter:
                 proc_frame = preprocessor.process(rgb_frame)
-                lm_world, lm_image = self._estimate_frame(pose2d, proc_frame)
+                lm_world, lm_image = self._estimate_frame(pose2d, proc_frame, frame_index)
+                frame_index += 1
 
                 if lm_world is not None:
-                    # Apply One Euro filter to world landmarks
                     if landmark_filter is not None:
-                        lm_world = landmark_filter.update(lm_world)
+                        vis = lm_image[:, 2] if lm_image is not None else None
+                        lm_world = landmark_filter.filter(lm_world, visibility=vis)
                     world_seq.append(lm_world)
                     image_seq.append(lm_image if lm_image is not None else empty_lm.copy())
                     detected_count += 1
@@ -342,14 +302,11 @@ class MocapPipeline:
         frame_count = len(world_seq)
         self._log.info(
             "  %d frames collected, detection in %d (%.1f%%)",
-            frame_count,
-            detected_count,
+            frame_count, detected_count,
             100.0 * detected_count / frame_count if frame_count else 0.0,
         )
-        self._log.debug("  frame loop: %.3fs", time.perf_counter() - t0)
 
         if frame_count == 0:
-            self._log.warning("No frames were read from the video — returning empty result.")
             return ProcessingResult(
                 source_video=video_path,
                 processing_time_sec=time.perf_counter() - pipeline_start,
@@ -358,10 +315,7 @@ class MocapPipeline:
             )
 
         if detected_count == 0:
-            self._log.warning(
-                "No person was detected in any frame of %s — returning empty result.",
-                video_path.name,
-            )
+            self._log.warning("No person detected in %s", video_path.name)
             return ProcessingResult(
                 source_video=video_path,
                 processing_time_sec=time.perf_counter() - pipeline_start,
@@ -371,73 +325,35 @@ class MocapPipeline:
 
         detection_rate = detected_count / frame_count
 
-        # ---- 7a. Stack arrays [F, 33, 3] --------------------------------
+        # ---- 5. Post-process pose sequence ------------------------------
         self._log.info("Stage 5/8: Post-processing pose sequence")
-        t0 = time.perf_counter()
         world_arr = np.stack(world_seq, axis=0).astype(np.float32)   # (F, 33, 3)
         image_arr = np.stack(image_seq, axis=0).astype(np.float32)   # (F, 33, 3)
 
-        # ---- 7b. Estimate body proportions -----------------------------
-        body_props = estimate_body_proportions(
+        body_props = _estimate_body_proportions(
             world_arr,
             n_frames=self.settings.reconstruction.bone_estimation_frames,
         )
-        self._log.debug("  body proportions: %s", body_props)
+        self._log.debug("  body proportions: %d bones estimated", len(body_props))
 
-        # ---- 7c. PoseOptimizer: gap fill → bone normalize → SavGol ----
-        optimizer = PoseOptimizer(
-            settings=self.settings,
-            body_proportions=body_props,
-        )
-        world_arr = optimizer.run(world_arr)
-        self._log.debug("  optimization: %.3fs", time.perf_counter() - t0)
+        world_arr = self._optimize(world_arr, image_arr)
 
-        # ---- 7d. Estimate camera model from first valid frame ----------
+        # ---- 6. Camera model --------------------------------------------
         self._log.info("Stage 6/8: Estimating camera model")
-        t0 = time.perf_counter()
-        first_valid = self._first_valid_frame(world_arr)
-        camera = estimate_camera(
-            world_pts=world_arr[first_valid] if first_valid is not None else world_arr[0],
-            image_width=meta.width,
-            image_height=meta.height,
-            focal_length=self.settings.reconstruction.focal_length,
-        )
-        self._log.debug("  camera estimation: %.3fs", time.perf_counter() - t0)
+        camera = self._estimate_camera(world_arr, image_arr, meta)
 
-        # ---- 7e. Build AnimationSkeleton --------------------------------
+        # ---- 7. Build animation skeleton + retarget ---------------------
         self._log.info("Stage 7/8: Building skeleton and retargeting")
-        t0 = time.perf_counter()
-        skeleton = self._build_skeleton(world_arr, image_arr, meta, camera)
+        anim_skeleton = build_animation_skeleton(body_props) if build_animation_skeleton else None
+        anim_data = self._retarget(anim_skeleton, world_arr, str(video_path))
 
-        # ---- 7f. Retarget ----------------------------------------------
-        skeleton = self._retarget(skeleton, world_arr)
-        self._log.debug("  skeleton + retarget: %.3fs", time.perf_counter() - t0)
-
-        # ---- 7g. Export all formats ------------------------------------
+        # ---- 8. Export --------------------------------------------------
         self._log.info("Stage 8/8: Exporting animation")
-        t0 = time.perf_counter()
-        output_files = export_all(
-            skeleton=skeleton,
-            output_dir=output_dir,
-            formats=self.settings.animation.export_formats,
-            stem=stem,
-            fps=self.settings.video.target_fps,
-            bvh_scale=self.settings.animation.bvh_scale,
-            coordinate_system=self.settings.reconstruction.coordinate_system,
-        )
+        output_files = self._export(anim_data, output_dir, stem)
         self._log.info("  exported: %s", list(output_files.keys()))
-        self._log.debug("  export: %.3fs", time.perf_counter() - t0)
 
-        # ---- 7h. Compute metrics ---------------------------------------
-        metrics = compute_metrics(
-            predicted=world_arr,
-            image_pts=image_arr,
-            fps=self.settings.video.target_fps,
-            output_dir=output_dir,
-            stem=stem,
-            save_csv=self.settings.evaluation.save_metrics_csv,
-            ground_truth_path=self.settings.evaluation.ground_truth_path,
-        )
+        # ---- Metrics ----------------------------------------------------
+        metrics = self._compute_metrics(world_arr, camera, output_dir, stem)
 
         processing_time = time.perf_counter() - pipeline_start
         self._log.info(
@@ -460,66 +376,43 @@ class MocapPipeline:
     # ------------------------------------------------------------------
 
     def _build_pose2d_estimator(self) -> Any:
-        """Construct the 2D pose estimator, respecting the configured backend."""
         if MediaPipePose2D is None:
-            self._log.warning(
-                "pose.pose_2d module not available — using built-in fallback estimator"
-            )
+            self._log.warning("pose.pose_2d not available — using built-in fallback")
             return _FallbackPose2D(self.settings)
-
         try:
             estimator = MediaPipePose2D(
-                model_complexity=self.settings.pose.model_complexity,
-                min_detection_confidence=self.settings.detection.min_detection_confidence,
-                min_tracking_confidence=self.settings.detection.min_tracking_confidence,
-                rotation_fallback_threshold=self.settings.detection.rotation_fallback_threshold,
-                device=self.settings.device,
+                pose_config=self.settings.pose,
+                detection_config=self.settings.detection,
             )
-            self._log.debug("MediaPipePose2D estimator initialized")
+            self._log.debug("MediaPipePose2D initialized")
             return estimator
         except Exception as exc:
-            self._log.warning(
-                "Could not initialize MediaPipePose2D (%s); using fallback", exc
-            )
+            self._log.warning("MediaPipePose2D init failed (%s); using fallback", exc)
             return _FallbackPose2D(self.settings)
 
     def _build_landmark_filter(self, source_fps: float) -> Any:
-        """Construct the One Euro landmark filter."""
         if LandmarkFilter is None:
-            self._log.debug("filtering.temporal_filter not available — skipping One Euro filter")
             return None
-
         try:
-            filt = LandmarkFilter(
+            return LandmarkFilter(
                 n_landmarks=33,
-                n_dims=3,
+                freq=source_fps,
                 min_cutoff=self.settings.filtering.one_euro_min_cutoff,
                 beta=self.settings.filtering.one_euro_beta,
                 d_cutoff=self.settings.filtering.one_euro_d_cutoff,
-                fps=source_fps,
-                mode="one_euro",
-                realtime=True,
             )
-            return filt
         except Exception as exc:
-            self._log.warning("LandmarkFilter init failed (%s) — skipping filter", exc)
+            self._log.warning("LandmarkFilter init failed (%s) — skipping", exc)
             return None
 
     def _estimate_frame(
         self,
         pose2d: Any,
         frame: np.ndarray,
+        frame_index: int = 0,
     ) -> tuple[Optional[np.ndarray], Optional[np.ndarray]]:
-        """Run pose estimation on a single frame.
-
-        Returns
-        -------
-        (world_landmarks, image_landmarks) or (None, None) if no detection.
-        Both arrays have shape (33, 3).  world_landmarks are metric coordinates;
-        image_landmarks are (x_norm, y_norm, visibility).
-        """
         try:
-            result = pose2d.estimate(frame)
+            result = pose2d.estimate(frame, frame_index)
         except Exception as exc:
             self._log.debug("Pose estimation error: %s", exc)
             return None, None
@@ -527,58 +420,124 @@ class MocapPipeline:
         if result is None:
             return None, None
 
-        # Expect result to expose .world_landmarks and .image_landmarks as (33,3) arrays.
-        if hasattr(result, "world_landmarks") and hasattr(result, "image_landmarks"):
-            return result.world_landmarks, result.image_landmarks
+        # Pose2DResult from src.pose.pose_2d
+        if hasattr(result, "landmarks_world") and hasattr(result, "landmarks_image"):
+            return result.landmarks_world, result.landmarks_image
 
-        # Legacy / fallback: result is a 2-tuple (world, image)
+        # Fallback: 2-tuple (world, image)
         if isinstance(result, (tuple, list)) and len(result) == 2:
             return result[0], result[1]
 
         self._log.warning("Unexpected pose result type: %s", type(result))
         return None, None
 
-    def _build_skeleton(
+    def _optimize(self, world_arr: np.ndarray, image_arr: np.ndarray) -> np.ndarray:
+        if PoseOptimizer is None:
+            return world_arr
+        try:
+            optimizer = PoseOptimizer(
+                filtering_config=self.settings.filtering,
+                reconstruction_config=self.settings.reconstruction,
+            )
+            visibility = image_arr[:, :, 2]  # [F, 33]
+            return optimizer.optimize(
+                world_arr,
+                visibility,
+                fps=self.settings.video.target_fps,
+                body_proportions=None,  # bone normalization skipped (no kinematics Skeleton)
+                skeleton=None,
+            )
+        except Exception as exc:
+            self._log.warning("PoseOptimizer failed (%s) — skipping optimization", exc)
+            return world_arr
+
+    def _estimate_camera(self, world_arr: np.ndarray, image_arr: np.ndarray, meta: Any) -> Any:
+        if not _CAMERA_AVAILABLE:
+            return None
+        try:
+            first_valid = self._first_valid_frame(world_arr)
+            focal_length = self.settings.reconstruction.focal_length
+            if focal_length == "auto" and first_valid is not None:
+                focal_px = estimate_focal_length(
+                    image_arr[first_valid],
+                    world_arr[first_valid],
+                    meta.width,
+                    meta.height,
+                )
+            elif focal_length != "auto":
+                focal_px = float(focal_length)
+            else:
+                focal_px = 1.2 * max(meta.width, meta.height)
+            return make_camera(meta.width, meta.height, focal_px)
+        except Exception as exc:
+            self._log.warning("Camera estimation failed (%s) — using default", exc)
+            return make_camera(meta.width, meta.height)
+
+    def _retarget(
+        self,
+        skeleton: Any,
+        world_arr: np.ndarray,
+        source_video: str = "",
+    ) -> Any:
+        if MediaPipeToSkeletonRetargeter is None or skeleton is None:
+            self._log.debug("Retargeting not available — returning stub animation data")
+            return _make_stub_animation_data(skeleton, world_arr, self.settings.video.target_fps, source_video)
+        try:
+            retargeter = MediaPipeToSkeletonRetargeter()
+            root_motion = np.zeros((world_arr.shape[0], 3), dtype=np.float32)
+            return retargeter.retarget_sequence(
+                world_arr,
+                root_motion,
+                fps=self.settings.video.target_fps,
+                skeleton=skeleton,
+                source_video=source_video,
+            )
+        except Exception as exc:
+            self._log.warning("Retargeting failed (%s) — using stub", exc)
+            return _make_stub_animation_data(skeleton, world_arr, self.settings.video.target_fps, source_video)
+
+    def _export(self, anim_data: Any, output_dir: Path, stem: str) -> Dict[str, Path]:
+        if AnimationExporter is None or anim_data is None:
+            self._log.warning("AnimationExporter not available — no files written")
+            return {}
+        try:
+            orig_dir = self.settings.animation.output_dir
+            self.settings.animation.output_dir = str(output_dir)
+            exporter = AnimationExporter(self.settings.animation)
+            result = exporter.export_all(anim_data, stem)
+            self.settings.animation.output_dir = orig_dir
+            return result
+        except Exception as exc:
+            self._log.error("Export failed: %s", exc)
+            return {}
+
+    def _compute_metrics(
         self,
         world_arr: np.ndarray,
-        image_arr: np.ndarray,
-        meta: Any,
         camera: Any,
-    ) -> Any:
-        """Instantiate AnimationSkeleton with the processed sequence."""
-        if AnimationSkeleton is None:
-            return _StubSkeleton(world_arr, image_arr, meta)
-
+        output_dir: Path,
+        stem: str,
+    ) -> Optional[Any]:
+        if MetricsReporter is None:
+            return None
         try:
-            return AnimationSkeleton(
-                world_sequence=world_arr,
-                image_sequence=image_arr,
-                fps=self.settings.video.target_fps,
+            reporter = MetricsReporter()
+            metrics = reporter.compute_all(
+                sequence_3d=world_arr,
+                sequence_2d_px=None,
                 camera=camera,
-                coordinate_system=self.settings.reconstruction.coordinate_system,
+                fps=self.settings.video.target_fps,
+                ground_truth=None,
             )
+            if self.settings.evaluation.save_metrics_csv:
+                reporter.save_csv(metrics, output_dir / f"{stem}_metrics.csv")
+            return metrics
         except Exception as exc:
-            self._log.warning("AnimationSkeleton init failed (%s) — using stub", exc)
-            return _StubSkeleton(world_arr, image_arr, meta)
-
-    def _retarget(self, skeleton: Any, world_arr: np.ndarray) -> Any:
-        """Apply MediaPipe → skeleton retargeting if available."""
-        if MediaPipeToSkeletonRetargeter is None:
-            self._log.debug("animation.retargeting not available — skipping retarget")
-            return skeleton
-
-        try:
-            retargeter = MediaPipeToSkeletonRetargeter(
-                coordinate_system=self.settings.reconstruction.coordinate_system,
-            )
-            return retargeter.retarget(skeleton, world_arr)
-        except Exception as exc:
-            self._log.warning("Retargeting failed (%s) — using un-retargeted skeleton", exc)
-            return skeleton
+            self._log.warning("Metrics computation failed (%s)", exc)
+            return None
 
     @staticmethod
     def _first_valid_frame(arr: np.ndarray) -> Optional[int]:
-        """Return the index of the first frame with no NaN landmarks."""
         for i, frame in enumerate(arr):
             if not np.any(np.isnan(frame)):
                 return i
@@ -586,8 +545,31 @@ class MocapPipeline:
 
 
 # ---------------------------------------------------------------------------
-# Internal stubs (used when real modules are absent)
+# Internal helpers
 # ---------------------------------------------------------------------------
+
+def _make_stub_animation_data(skeleton: Any, world_arr: np.ndarray, fps: float, source_video: str = "") -> Any:
+    """Build minimal AnimationData when retargeting is unavailable."""
+    if AnimationFrame is None or AnimationData is None:
+        return None
+    frames = []
+    identity_q = np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float64)
+    joint_names = skeleton.joints if skeleton is not None else []
+    for f in range(len(world_arr)):
+        pts = world_arr[f]
+        l_hip, r_hip = pts[23], pts[24]
+        if np.any(np.isnan(l_hip)) or np.any(np.isnan(r_hip)):
+            root_pos = np.zeros(3, dtype=np.float32)
+        else:
+            root_pos = ((l_hip + r_hip) / 2.0).astype(np.float32)
+        frames.append(AnimationFrame(
+            frame_index=f,
+            timestamp=f / fps,
+            root_position=root_pos,
+            joint_rotations={j: identity_q.copy() for j in joint_names},
+        ))
+    return AnimationData(frames=frames, skeleton=skeleton, fps=fps, source_video=source_video)
+
 
 class _FallbackPose2D:
     """Minimal MediaPipe-based pose estimator used when pose_2d module is absent."""
@@ -600,7 +582,6 @@ class _FallbackPose2D:
         self._init_landmarker()
 
     def _init_landmarker(self) -> None:
-        import os
         import urllib.request
 
         try:
@@ -639,7 +620,7 @@ class _FallbackPose2D:
         self._mp = mp
         logger.debug("Fallback MediaPipe landmarker initialized from %s", model_path)
 
-    def estimate(self, frame: np.ndarray):
+    def estimate(self, frame: np.ndarray, frame_index: int = 0):
         if self._landmarker is None:
             return None
 
@@ -666,7 +647,6 @@ class _FallbackPose2D:
                 [[p.x, p.y, p.z] for p in result.pose_world_landmarks[0]],
                 dtype=np.float32,
             )
-            # Unrotate coordinates back to original frame orientation
             if rot == cv2.ROTATE_180:
                 img_pts[:, 0] = 1 - img_pts[:, 0]
                 img_pts[:, 1] = 1 - img_pts[:, 1]
@@ -678,11 +658,9 @@ class _FallbackPose2D:
             elif rot == cv2.ROTATE_90_COUNTERCLOCKWISE:
                 img_pts[:, 0], img_pts[:, 1] = 1 - img_pts[:, 1].copy(), img_pts[:, 0].copy()
                 world_pts[:, 0], world_pts[:, 1] = -world_pts[:, 1].copy(), world_pts[:, 0].copy()
-
             score = float(img_pts[BODY, 2].mean())
             return score, img_pts, world_pts
 
-        # Try previous rotation first
         candidates = {}
         candidates[self._prev_rot] = _detect_one(frame, self._prev_rot)
         first = candidates[self._prev_rot]
@@ -704,15 +682,6 @@ class _FallbackPose2D:
             return None
 
         _, img_pts, world_pts = best
-        # Zero out low-visibility landmarks
         low_vis = img_pts[:, 2] < min_vis
         world_pts[low_vis] = np.nan
         return world_pts, img_pts
-
-
-@dataclass
-class _StubSkeleton:
-    """Passthrough skeleton used when animation.skeleton is unavailable."""
-    world_sequence: np.ndarray
-    image_sequence: np.ndarray
-    meta: Any

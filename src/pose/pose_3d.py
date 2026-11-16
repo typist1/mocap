@@ -62,6 +62,13 @@ class GeometricLifter(Pose3DLifter):
         # but we ensure it explicitly)
         world_centered = world - hip_mid
 
+        # Convert MediaPipe world (x-right, y-down, z-away) → Blender (x-right, y-forward, z-up)
+        blender = np.empty_like(world_centered)
+        blender[:, 0] = world_centered[:, 0]    # x → x
+        blender[:, 1] = world_centered[:, 2]    # z → y (depth → forward)
+        blender[:, 2] = -world_centered[:, 1]   # -y → z (down → up)
+        world_centered = blender
+
         # Estimate scale: torso pixels / torso meters
         sh_mid_w = (world_centered[MP33.LEFT_SHOULDER] + world_centered[MP33.RIGHT_SHOULDER]) / 2.0
         torso_m = float(np.linalg.norm(sh_mid_w))

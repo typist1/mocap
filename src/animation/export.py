@@ -14,6 +14,7 @@ from src.animation.skeleton import (
     AnimationSkeleton,
     euler_from_quat,
 )
+from src.pose.keypoints import MP33, MP33_NAMES
 from src.config.settings import AnimationConfig
 from src.utils.logging import get_logger
 
@@ -130,8 +131,7 @@ class NPZExporter:
                 q = frame.joint_rotations.get(jname, np.array([0.0, 0.0, 0.0, 1.0]))
                 rotations[fi, ji] = q
 
-        np.savez_compressed(
-            str(path),
+        save_kwargs: dict = dict(
             positions=positions,
             rotations=rotations,
             root_positions=root_positions,
@@ -139,6 +139,14 @@ class NPZExporter:
             joint_names=np.array(data.skeleton.joints, dtype=object),
             source_video=np.array([data.source_video], dtype=object),
         )
+        if data.sequence_3d is not None:
+            save_kwargs["positions_3d"] = data.sequence_3d.astype(np.float32)
+        if data.root_motion is not None:
+            save_kwargs["root_motion"] = data.root_motion.astype(np.float32)
+        if data.landmarks_image is not None:
+            save_kwargs["landmarks_image"] = data.landmarks_image.astype(np.float32)
+
+        np.savez_compressed(str(path), **save_kwargs)
         logger.debug("NPZ exported %d frames to %s", n_frames, path)
         return path
 
@@ -152,21 +160,34 @@ class JSONExporter:
         path = Path(output_path)
         path.parent.mkdir(parents=True, exist_ok=True)
 
-        # Reconstruct per-frame joint positions from stored frames
-        # For backward compat we store root motion + relative positions
-        frames_list = []
-        for frame in data.frames:
-            # Store root position + placeholder zeros for now
-            pos = frame.root_position.tolist()
-            frames_list.append(pos)
+        if data.sequence_3d is not None:
+            # blender_apply.py-compatible format
+            seq = data.sequence_3d                    # [F, 33, 3]
+            root = (data.root_motion.tolist()
+                    if data.root_motion is not None
+                    else [[0.0, 0.0, 0.0]] * seq.shape[0])
+            # Leg length: mean distance left hip → left ankle
+            leg_vecs = seq[:, MP33.LEFT_ANKLE] - seq[:, MP33.LEFT_HIP]
+            leg_length = float(np.linalg.norm(leg_vecs, axis=1).mean())
+            payload = {
+                "fps": data.fps,
+                "names": list(MP33_NAMES),
+                "leg_length": leg_length,
+                "root": root,
+                "frames": seq.tolist(),
+                "source_video": data.source_video,
+            }
+        else:
+            # Fallback: BVH joint-name format (no raw landmarks available)
+            frames_list = [frame.root_position.tolist() for frame in data.frames]
+            payload = {
+                "fps": data.fps,
+                "names": data.skeleton.joints,
+                "joint_names": data.skeleton.joints,
+                "frames": frames_list,
+                "source_video": data.source_video,
+            }
 
-        payload = {
-            "fps": data.fps,
-            "names": data.skeleton.joints,
-            "joint_names": data.skeleton.joints,
-            "frames": frames_list,
-            "source_video": data.source_video,
-        }
         path.write_text(json.dumps(payload, indent=None))
         logger.debug("JSON exported %d frames to %s", len(data.frames), path)
         return path

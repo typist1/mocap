@@ -188,11 +188,12 @@ class LandmarkFilter:
         ]
 
     def filter(self, world_pts: np.ndarray, visibility: Optional[np.ndarray] = None) -> np.ndarray:
-        """Filter shape [N, 3]. Low-visibility landmarks are passed unfiltered."""
+        """Filter shape [N, 3]. Low-visibility landmarks skip the update (preserving
+        filter state) so the next visible frame sees a smooth history, not a cold start."""
         result = world_pts.copy()
         for i, flt in enumerate(self._filters):
             if visibility is not None and float(visibility[i]) < self.min_visibility:
-                flt.reset()
+                # Do NOT reset — keep filter warm so the next visible frame is continuous.
                 continue
             result[i] = flt.filter(world_pts[i])
         return result

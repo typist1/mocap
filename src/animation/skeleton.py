@@ -184,6 +184,14 @@ class AnimationData:
     skeleton: AnimationSkeleton
     fps: float
     source_video: str = ""
+    # Raw per-frame landmark positions [F, 33, 3] in Blender-space meters.
+    # Required for backward-compatible JSON export (blender_apply.py format).
+    sequence_3d: Optional[np.ndarray] = None
+    # Root motion trajectory [F, 3] separate from body-centered positions.
+    root_motion: Optional[np.ndarray] = None
+    # 2D image landmarks [F, 33, 3]: normalized x,y + visibility score.
+    # Required for skeleton overlay video generation.
+    landmarks_image: Optional[np.ndarray] = None
 
 
 # Default bone lengths for a 1.70m person (in meters)

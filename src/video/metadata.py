@@ -20,6 +20,14 @@ class VideoMetadata:
     aspect_ratio: float
     orientation: str  # "landscape" / "portrait" / "square"
 
+    @property
+    def frame_count(self) -> int:
+        return self.total_frames
+
+    @property
+    def duration_sec(self) -> float:
+        return self.duration_seconds
+
     def __str__(self) -> str:
         return (
             f"{self.path.name}: {self.width}x{self.height} @ {self.fps:.2f}fps, "

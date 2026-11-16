@@ -143,4 +143,11 @@ class MediaPipeToSkeletonRetargeter:
             prev = frame
 
         logger.debug("Retargeted %d frames", F)
-        return AnimationData(frames=frames, skeleton=skeleton, fps=fps, source_video=source_video)
+        return AnimationData(
+            frames=frames,
+            skeleton=skeleton,
+            fps=fps,
+            source_video=source_video,
+            sequence_3d=sequence_3d.copy(),
+            root_motion=root_motion.copy(),
+        )

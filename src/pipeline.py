@@ -37,62 +37,92 @@ try:
 except Exception:  # pragma: no cover
     @dataclass
     class VideoMetadata:  # type: ignore[no-redef]
+        path: Path = Path(".")
         width: int = 0
         height: int = 0
         fps: float = 30.0
-        frame_count: int = 0
-        duration_sec: float = 0.0
+        total_frames: int = 0
+        duration_seconds: float = 0.0
+        codec: str = ""
+        has_audio: bool = False
+        aspect_ratio: float = 1.0
+        orientation: str = "landscape"
 
     def extract_metadata(path: Path) -> VideoMetadata:  # type: ignore[misc]
-        import cv2
-        cap = cv2.VideoCapture(str(path))
-        meta = VideoMetadata(
-            width=int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)),
-            height=int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)),
-            fps=cap.get(cv2.CAP_PROP_FPS) or 30.0,
-            frame_count=int(cap.get(cv2.CAP_PROP_FRAME_COUNT)),
+        import cv2 as _cv2
+        _cap = _cv2.VideoCapture(str(path))
+        _fps = _cap.get(_cv2.CAP_PROP_FPS) or 30.0
+        _tf = int(_cap.get(_cv2.CAP_PROP_FRAME_COUNT))
+        _w = int(_cap.get(_cv2.CAP_PROP_FRAME_WIDTH))
+        _h = int(_cap.get(_cv2.CAP_PROP_FRAME_HEIGHT))
+        _cap.release()
+        return VideoMetadata(
+            path=Path(path),
+            width=_w,
+            height=_h,
+            fps=_fps,
+            total_frames=_tf,
+            duration_seconds=_tf / _fps if _fps else 0.0,
+            codec="",
+            has_audio=False,
+            aspect_ratio=_w / _h if _h else 1.0,
+            orientation="landscape" if _w >= _h else "portrait",
         )
-        meta.duration_sec = meta.frame_count / meta.fps if meta.fps else 0.0
-        cap.release()
-        return meta
 
 try:
     from src.video.loader import VideoLoader
 except Exception:  # pragma: no cover
     class VideoLoader:  # type: ignore[no-redef]
-        def __init__(self, path: Path, target_fps: float = 30.0, **_kw: Any) -> None:
-            import cv2
-            self._path = path
-            self._target_fps = target_fps
-            self._cap: Optional[cv2.VideoCapture] = None
+        def __init__(self, metadata: Any, config: Any = None, preprocessor: Any = None, **_kw: Any) -> None:
+            self._path = getattr(metadata, 'path', metadata)
+            self._target_fps = float(getattr(config, 'target_fps', 30.0)) if config is not None else 30.0
+            self._max_dim = int(getattr(config, 'max_dimension', 1280)) if config is not None else 1280
+            self._cap = None
+            self._src_fps: float = self._target_fps
 
         def __enter__(self) -> "VideoLoader":
             import cv2
             self._cap = cv2.VideoCapture(str(self._path))
-            self._src_fps: float = self._cap.get(cv2.CAP_PROP_FPS) or self._target_fps
-            self._frame_idx = 0
-            self._next_time = 0.0
+            self._src_fps = self._cap.get(cv2.CAP_PROP_FPS) or self._target_fps
             return self
 
         def __exit__(self, *_: Any) -> None:
-            if self._cap:
+            if self._cap is not None:
                 self._cap.release()
+                self._cap = None
 
-        def __iter__(self):
+        def frames(self):
             import cv2
             assert self._cap is not None
+            src_fps = self._src_fps
+            tgt_fps = self._target_fps
+            frame_idx = 0
+            out_idx = 0
+            next_t = 0.0
             while True:
-                ok, frame = self._cap.read()
+                ok, bgr = self._cap.read()
                 if not ok:
                     break
-                t = self._frame_idx / self._src_fps
-                self._frame_idx += 1
-                if t + 1e-6 < self._next_time:
+                t = frame_idx / src_fps
+                frame_idx += 1
+                if t + 1e-9 < next_t:
                     continue
-                rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                while self._next_time <= t + 1e-6:
-                    yield rgb
-                    self._next_time += 1.0 / self._target_fps
+                h, w = bgr.shape[:2]
+                if max(h, w) > self._max_dim:
+                    s = self._max_dim / max(h, w)
+                    bgr = cv2.resize(bgr, (int(w * s), int(h * s)))
+                    scale = s
+                else:
+                    scale = 1.0
+                rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+                while next_t <= t + 1e-9:
+                    fd = type('FrameData', (), {
+                        'index': out_idx, 'timestamp_sec': next_t,
+                        'frame_bgr': bgr, 'frame_rgb': rgb, 'scale_factor': scale,
+                    })()
+                    yield fd
+                    out_idx += 1
+                    next_t += 1.0 / tgt_fps
 
 try:
     from src.video.preprocessing import FramePreprocessor
@@ -256,9 +286,9 @@ class MocapPipeline:
         meta = extract_metadata(video_path)
         self._log.info(
             "  %dx%d @ %.2f fps, %d frames, %.1fs",
-            meta.width, meta.height, meta.fps, meta.frame_count, meta.duration_sec,
+            meta.width, meta.height, meta.fps, meta.total_frames, meta.duration_seconds,
         )
-        if meta.frame_count == 0:
+        if meta.total_frames == 0:
             raise RuntimeError(f"Video appears to have no frames: {video_path}")
 
         # ---- 3. Initialize components -----------------------------------
@@ -280,7 +310,7 @@ class MocapPipeline:
                 loader.frames(),
                 desc="Estimating pose",
                 unit="frame",
-                total=meta.frame_count if meta.frame_count > 0 else None,
+                total=meta.total_frames if meta.total_frames > 0 else None,
                 dynamic_ncols=True,
             )
             for fd in frame_iter:
@@ -345,6 +375,8 @@ class MocapPipeline:
         self._log.info("Stage 7/8: Building skeleton and retargeting")
         anim_skeleton = build_animation_skeleton(body_props) if build_animation_skeleton else None
         anim_data = self._retarget(anim_skeleton, world_arr, str(video_path))
+        if anim_data is not None and hasattr(anim_data, "landmarks_image"):
+            anim_data.landmarks_image = image_arr
 
         # ---- 8. Export --------------------------------------------------
         self._log.info("Stage 8/8: Exporting animation")

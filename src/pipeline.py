@@ -34,7 +34,7 @@ except ImportError:
 
 try:
     from src.video.metadata import VideoMetadata, extract_metadata
-except ImportError:  # pragma: no cover
+except Exception:  # pragma: no cover
     @dataclass
     class VideoMetadata:  # type: ignore[no-redef]
         width: int = 0
@@ -58,7 +58,7 @@ except ImportError:  # pragma: no cover
 
 try:
     from src.video.loader import VideoLoader
-except ImportError:  # pragma: no cover
+except Exception:  # pragma: no cover
     class VideoLoader:  # type: ignore[no-redef]
         def __init__(self, path: Path, target_fps: float = 30.0, **_kw: Any) -> None:
             import cv2
@@ -96,7 +96,7 @@ except ImportError:  # pragma: no cover
 
 try:
     from src.video.preprocessing import FramePreprocessor
-except ImportError:  # pragma: no cover
+except Exception:  # pragma: no cover
     class FramePreprocessor:  # type: ignore[no-redef]
         def __init__(self, max_dimension: int = 1280, **_kw: Any) -> None:
             self._max_dim = max_dimension
@@ -112,20 +112,20 @@ except ImportError:  # pragma: no cover
 # pose 2D
 try:
     from src.pose.pose_2d import MediaPipePose2D
-except ImportError:  # pragma: no cover
+except Exception:  # pragma: no cover
     MediaPipePose2D = None  # type: ignore[assignment,misc]
 
 # filtering
 try:
     from src.filtering.temporal_filter import LandmarkFilter
-except ImportError:  # pragma: no cover
+except Exception:  # pragma: no cover
     LandmarkFilter = None  # type: ignore[assignment,misc]
 
 # camera
 try:
     from src.reconstruction.camera import estimate_focal_length, make_camera
     _CAMERA_AVAILABLE = True
-except ImportError:  # pragma: no cover
+except Exception:  # pragma: no cover
     _CAMERA_AVAILABLE = False
     def make_camera(width: int, height: int, focal_px: Optional[float] = None) -> None:  # type: ignore[misc]
         return None
@@ -135,7 +135,7 @@ except ImportError:  # pragma: no cover
 # optimizer
 try:
     from src.reconstruction.optimization import PoseOptimizer
-except ImportError:  # pragma: no cover
+except Exception:  # pragma: no cover
     PoseOptimizer = None  # type: ignore[assignment,misc]
 
 # animation skeleton
@@ -147,7 +147,7 @@ try:
         build_animation_skeleton,
     )
     _SKELETON_AVAILABLE = True
-except ImportError:  # pragma: no cover
+except Exception:  # pragma: no cover
     _SKELETON_AVAILABLE = False
     AnimationSkeleton = None  # type: ignore[assignment,misc]
     AnimationData = None      # type: ignore[assignment,misc]
@@ -157,14 +157,14 @@ except ImportError:  # pragma: no cover
 # retargeting
 try:
     from src.animation.retargeting import MediaPipeToSkeletonRetargeter
-except ImportError:  # pragma: no cover
+except Exception:  # pragma: no cover
     MediaPipeToSkeletonRetargeter = None  # type: ignore[assignment,misc]
 
 # export
 try:
     from src.animation.export import AnimationExporter
     _EXPORTER_AVAILABLE = True
-except ImportError:  # pragma: no cover
+except Exception:  # pragma: no cover
     _EXPORTER_AVAILABLE = False
     AnimationExporter = None  # type: ignore[assignment,misc]
 
@@ -172,7 +172,7 @@ except ImportError:  # pragma: no cover
 try:
     from src.evaluation.metrics import MetricsReporter
     _METRICS_AVAILABLE = True
-except ImportError:  # pragma: no cover
+except Exception:  # pragma: no cover
     _METRICS_AVAILABLE = False
     MetricsReporter = None  # type: ignore[assignment,misc]
 
@@ -180,7 +180,7 @@ except ImportError:  # pragma: no cover
 try:
     from tqdm import tqdm as _tqdm
     _TQDM_AVAILABLE = True
-except ImportError:
+except Exception:
     _TQDM_AVAILABLE = False
 
 
@@ -194,7 +194,7 @@ def _estimate_body_proportions(sequence_3d: np.ndarray, n_frames: int = 0) -> di
     """Compute median bone lengths from SKELETON_CONNECTIONS. Returns {bone_name: length_m}."""
     try:
         from src.pose.keypoints import SKELETON_CONNECTIONS, MP33_NAMES
-    except ImportError:
+    except Exception:
         return {}
     seq = sequence_3d[:n_frames] if 0 < n_frames <= len(sequence_3d) else sequence_3d
     valid = ~np.any(np.isnan(seq.reshape(seq.shape[0], -1)), axis=1)
@@ -275,17 +275,16 @@ class MocapPipeline:
         detected_count = 0
         frame_index = 0
 
-        with VideoLoader(video_path, target_fps=self.settings.video.target_fps) as loader:
+        with VideoLoader(meta, self.settings.video, preprocessor) as loader:
             frame_iter = _progress(
-                loader,
+                loader.frames(),
                 desc="Estimating pose",
                 unit="frame",
                 total=meta.frame_count if meta.frame_count > 0 else None,
                 dynamic_ncols=True,
             )
-            for rgb_frame in frame_iter:
-                proc_frame = preprocessor.process(rgb_frame)
-                lm_world, lm_image = self._estimate_frame(pose2d, proc_frame, frame_index)
+            for fd in frame_iter:
+                lm_world, lm_image = self._estimate_frame(pose2d, fd.frame_rgb, frame_index)
                 frame_index += 1
 
                 if lm_world is not None:
@@ -588,8 +587,8 @@ class _FallbackPose2D:
             import mediapipe as mp
             from mediapipe.tasks import python as mp_tasks
             from mediapipe.tasks.python import vision
-        except ImportError:
-            logger.error("mediapipe not installed — pose estimation unavailable")
+        except Exception:
+            logger.error("mediapipe not available — pose estimation unavailable")
             return
 
         model_url = (

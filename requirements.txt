@@ -1,11 +1,11 @@
 # Core
-numpy>=1.24,<2.0
+numpy>=1.24
 scipy>=1.11
 opencv-python>=4.8
 Pillow>=10.0
 
 # Pose estimation
-mediapipe>=0.10.9
+mediapipe>=0.10.14
 
 # Deep learning (optional GPU via CUDA wheels)
 torch>=2.1

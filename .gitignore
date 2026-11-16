@@ -27,14 +27,18 @@ checkpoints/
 *.h5
 *.weights
 
-# Videos and large media
-sample_videos/
+# Videos and large media (exclude outputs, keep sample_videos tracked)
 outputs/
 *.mp4
 *.avi
 *.mov
 *.mkv
 *.webm
+!sample_videos/*.mp4
+!sample_videos/*.avi
+!sample_videos/*.mov
+!sample_videos/*.mkv
+!sample_videos/*.webm
 
 # Output / generated files
 output/

@@ -1,0 +1,33 @@
+# Core
+numpy>=1.24,<2.0
+scipy>=1.11
+opencv-python>=4.8
+Pillow>=10.0
+
+# Pose estimation
+mediapipe>=0.10.9
+
+# Deep learning (optional GPU via CUDA wheels)
+torch>=2.1
+torchvision>=0.16
+
+# Config
+PyYAML>=6.0
+
+# BVH / animation math
+# (pure Python - no extra install)
+
+# Testing
+pytest>=7.4
+pytest-cov>=4.1
+
+# Export / data
+h5py>=3.9
+
+# Notebook
+jupyterlab>=4.0
+ipywidgets>=8.0
+
+# Utilities
+tqdm>=4.66
+rich>=13.0

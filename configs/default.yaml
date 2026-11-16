@@ -1,0 +1,51 @@
+device: "auto"
+log_level: "INFO"
+seed: 42
+
+video:
+  target_fps: 30.0
+  max_dimension: 1280
+  min_dimension: 320
+  min_detection_frames: 3
+
+detection:
+  min_detection_confidence: 0.3
+  min_tracking_confidence: 0.3
+  min_visibility: 0.3
+  rotation_fallback_threshold: 0.8
+  max_gap_frames: 15
+
+pose:
+  backend_2d: "mediapipe"
+  model_complexity: 2
+  backend_3d: "geometric"
+
+reconstruction:
+  focal_length: "auto"
+  normalize_bone_lengths: true
+  bone_estimation_frames: 0
+  coordinate_system: "blender"
+
+filtering:
+  one_euro_min_cutoff: 1.5
+  one_euro_beta: 0.1
+  one_euro_d_cutoff: 1.0
+  savgol_window: 11
+  savgol_polyorder: 3
+  savgol_enabled: true
+  butterworth_cutoff: 6.0
+  butterworth_order: 2
+  kalman_enabled: true
+  kalman_process_noise: 0.001
+  kalman_measurement_noise: 0.01
+
+animation:
+  export_formats:
+    - "bvh"
+    - "npz"
+    - "json"
+  output_dir: "."
+  bvh_scale: 100.0
+
+evaluation:
+  save_metrics_csv: true

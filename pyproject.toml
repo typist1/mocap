@@ -1,0 +1,85 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "mocap3d"
+version = "0.1.0"
+description = "Production 3D human motion capture from monocular video"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+keywords = ["motion capture", "pose estimation", "mediapipe", "3d", "animation", "bvh"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Multimedia :: Video",
+]
+dependencies = [
+    # Core numerical
+    "numpy>=1.24,<2.0",
+    "scipy>=1.11",
+    # Computer vision
+    "opencv-python>=4.8",
+    "Pillow>=10.0",
+    # Pose estimation
+    "mediapipe>=0.10.9",
+    # Deep learning (optional GPU via CUDA wheels — install separately for CUDA)
+    "torch>=2.1",
+    "torchvision>=0.16",
+    # Config
+    "PyYAML>=6.0",
+    # Export / data
+    "h5py>=3.9",
+    # Progress / display
+    "tqdm>=4.66",
+    "rich>=13.0",
+]
+
+[project.optional-dependencies]
+notebook = [
+    "jupyterlab>=4.0",
+    "ipywidgets>=8.0",
+]
+dev = [
+    "pytest>=7.4",
+    "pytest-cov>=4.1",
+    "ruff>=0.4",
+    "mypy>=1.8",
+]
+
+[project.scripts]
+mocap = "main:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]
+
+[tool.setuptools.package-dir]
+"" = "."
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v --tb=short"
+filterwarnings = [
+    "ignore::DeprecationWarning",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true
